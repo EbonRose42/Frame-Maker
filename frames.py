@@ -48,7 +48,7 @@ def scale_to_fit(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
     return img.resize((max(1, int(round(w * ratio))), max(1, int(round(h * ratio)))), Image.LANCZOS)
 
 
-def create_dotted_background(size: tuple[int, int], bg_color: tuple[int, int, int], dot_color: tuple[int, int, int]) -> Image.Image:
+def create_splatter_background(size: tuple[int, int], bg_color: tuple[int, int, int], dot_color: tuple[int, int, int]) -> Image.Image:
     w, h = size
     layer = Image.new("RGBA", size, bg_color + (255,))
     draw = ImageDraw.Draw(layer)
