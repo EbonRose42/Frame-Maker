@@ -16,13 +16,8 @@ ALLOWED_INPUT_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 BORDER_WIDTH = 10
 BACKGROUND_SCALE = 1.15
 SIGIL_SCALE = 0.50
-LOGO_SCALE = 0.22
-POLKA_PRIMARY_WEIGHT = 0.8
-
-PATTERN_POLKA = "polka"
-PATTERN_SPLATTER = "splatter"
-PATTERN_MIXED = "mixed"
-
+LOGO_SCALE = 0.18
+LOGO_OVERLAP = 0.15
 
 
 def find_file_case_insensitive(folder: Path, wanted_name: str) -> Path:
@@ -72,80 +67,33 @@ def create_splatter_background(size: tuple[int, int], bg_color: tuple[int, int, 
     return layer
 
 
-def create_polka_background(size: tuple[int, int], bg_color: tuple[int, int, int], dot_color: tuple[int, int, int]) -> Image.Image:
-    w, h = size
-    layer = Image.new("RGBA", size, bg_color + (255,))
-    draw = ImageDraw.Draw(layer)
-
-    base = min(w, h)
-    dot_radius = random.randint(max(3, int(base * 0.010)), max(5, int(base * 0.022)))
-    gap = random.randint(max(4, dot_radius // 2), max(8, dot_radius * 2))
-    tile = max(dot_radius * 2 + gap, dot_radius * 3)
-
-    diagonal = random.random() < 0.5
-    row_offset = tile // 2 if diagonal else 0
-
-    for y in range(-tile, h + tile, tile):
-        row_idx = (y + tile) // tile
-        x_offset = row_offset if diagonal and (row_idx % 2) else 0
-        for x in range(-tile, w + tile, tile):
-            cx = x + x_offset
-            cy = y
-            draw.ellipse((cx - dot_radius, cy - dot_radius, cx + dot_radius, cy + dot_radius), fill=dot_color + (255,))
-
-    return layer
-
-
-def create_dotted_background(
-    size: tuple[int, int],
-    bg_color: tuple[int, int, int],
-    dot_color: tuple[int, int, int],
-    pattern_mode: str,
-) -> tuple[Image.Image, str]:
-    if pattern_mode == PATTERN_POLKA:
-        return create_polka_background(size, bg_color, dot_color), PATTERN_POLKA
-    if pattern_mode == PATTERN_SPLATTER:
-        return create_splatter_background(size, bg_color, dot_color), PATTERN_SPLATTER
-
-    if random.random() < POLKA_PRIMARY_WEIGHT:
-        return create_polka_background(size, bg_color, dot_color), PATTERN_POLKA
-    return create_splatter_background(size, bg_color, dot_color), PATTERN_SPLATTER
-
-
 def choose_color_roles() -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
     colors = list(PALETTE)
     random.shuffle(colors)
     return colors[0], colors[1], colors[2]  # background, dots, border
 
 
-def corner_logo(
-    base: Image.Image,
-    logo: Image.Image,
-    photo_xy: tuple[int, int],
-    photo_wh: tuple[int, int],
-    side: str,
-) -> None:
+def corner_logo(base: Image.Image, logo: Image.Image, photo_xy: tuple[int, int], photo_wh: tuple[int, int], side: str) -> None:
     px, py = photo_xy
     pw, ph = photo_wh
 
     logo_target_w = max(1, int(round(pw * LOGO_SCALE)))
-    scaled = scale_to_fit(logo, logo_target_w, max(1, int(round(ph * 0.30))))
+    scaled = scale_to_fit(logo, logo_target_w, max(1, int(round(ph * 0.25))))
     lw, lh = scaled.size
 
-    frame_left = px - BORDER_WIDTH
-    frame_right = px + pw + BORDER_WIDTH - 1
-    frame_bottom = py + ph + BORDER_WIDTH - 1
+    inset_x = int(round(lw * LOGO_OVERLAP))
+    inset_y = int(round(lh * LOGO_OVERLAP))
 
     if side == "right":
-        x = frame_right - lw + 1
+        x = px + pw - inset_x - lw
     else:
-        x = frame_left
-    y = frame_bottom - lh + 1
+        x = px - lw + inset_x
+    y = py + ph - lh + inset_y
 
     base.alpha_composite(scaled, (x, y))
 
 
-def process_image(img_path: Path, output_dir: Path, sigil: Image.Image, logo_r: Image.Image, logo_l: Image.Image, pattern_mode: str) -> tuple[Path, str]:
+def process_image(img_path: Path, output_dir: Path, sigil: Image.Image, logo_r: Image.Image, logo_l: Image.Image) -> Path:
     with Image.open(img_path) as source:
         src = source.convert("RGBA")
 
@@ -154,7 +102,7 @@ def process_image(img_path: Path, output_dir: Path, sigil: Image.Image, logo_r: 
     ch = max(sh + 2 * BORDER_WIDTH, int(round(sh * BACKGROUND_SCALE)))
 
     bg_color, dot_color, border_color = choose_color_roles()
-    canvas, pattern_name = create_dotted_background((cw, ch), bg_color, dot_color, pattern_mode)
+    canvas = create_dotted_background((cw, ch), bg_color, dot_color)
 
     sigil_scaled = scale_to_fit(sigil, int(round(sw * SIGIL_SCALE)), int(round(sh * SIGIL_SCALE)))
     sx = (cw - sigil_scaled.width) // 2
@@ -174,7 +122,7 @@ def process_image(img_path: Path, output_dir: Path, sigil: Image.Image, logo_r: 
     output_dir.mkdir(exist_ok=True)
     out_path = output_dir / f"{img_path.stem}_framed.png"
     canvas.convert("RGB").save(out_path, "PNG")
-    return out_path, pattern_name
+    return out_path
 
 
 class FrameMakerApp:
@@ -191,12 +139,6 @@ class FrameMakerApp:
 
         self.run_button = tk.Button(root, text="Generate Frames", command=self.start_processing, width=24, height=2)
         self.run_button.pack(pady=8)
-
-        self.pattern_mode_var = tk.StringVar(value=PATTERN_POLKA)
-        pattern_row = tk.Frame(root)
-        pattern_row.pack(pady=(0, 6))
-        tk.Label(pattern_row, text="Dot pattern:").pack(side="left")
-        tk.OptionMenu(pattern_row, self.pattern_mode_var, PATTERN_POLKA, PATTERN_MIXED, PATTERN_SPLATTER).pack(side="left")
 
         tk.Label(root, textvariable=self.status_var, anchor="w").pack(fill="x", padx=12)
 
@@ -234,12 +176,10 @@ class FrameMakerApp:
             with Image.open(cracked_logo_path) as ll:
                 logo_l = ll.convert("RGBA")
 
-            pattern_mode = self.pattern_mode_var.get()
             self.append_log(f"Found {len(images)} images in Input")
-            self.append_log(f"Pattern mode: {pattern_mode}")
             for img in images:
-                out, pattern_name = process_image(img, output_dir, sigil, logo_r, logo_l, pattern_mode)
-                self.append_log(f"✓ {img.name} -> {out.name} ({pattern_name})")
+                out = process_image(img, output_dir, sigil, logo_r, logo_l)
+                self.append_log(f"✓ {img.name} -> {out.name}")
 
             self.status_var.set(f"Done. Wrote {len(images)} file(s) to Output.")
             self.root.after(0, lambda: messagebox.showinfo("Frame Maker", f"Done! Processed {len(images)} image(s)."))
