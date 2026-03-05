@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Frame Maker v2 - standalone GUI batch framer.
-
-Expected folder layout (next to this script):
-- sigil.jpg
-- logo.png
-- Cracked Egg Logo.png
-- Input/
-- Output/
-"""
+"""Frame Maker v2 - standalone GUI framer with preview."""
 
 from __future__ import annotations
 
@@ -17,9 +9,9 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.2.0"
 
 PALETTE = ((0, 0, 0), (255, 255, 255), (255, 0, 0))  # black, white, red
 ALLOWED_INPUT_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
@@ -27,20 +19,13 @@ ALLOWED_INPUT_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 BORDER_WIDTH = 10
 BACKGROUND_SCALE = 1.15
 SIGIL_SCALE = 0.50
-LOGO_SCALE = 0.22
+ICON_SCALE_OPTIONS = (0.10, 0.15, 0.20)
 POLKA_PRIMARY_WEIGHT = 0.85
+PREVIEW_MAX_SIZE = (460, 460)
 
 PATTERN_POLKA = "polka"
 PATTERN_SPLATTER = "splatter"
 PATTERN_MIXED = "mixed"
-
-
-def find_file_case_insensitive(folder: Path, wanted_name: str) -> Path:
-    wanted = wanted_name.lower()
-    for p in folder.iterdir():
-        if p.is_file() and p.name.lower() == wanted:
-            return p
-    raise FileNotFoundError(f"Missing required file: {wanted_name}")
 
 
 def list_input_images(input_dir: Path) -> list[Path]:
@@ -130,17 +115,15 @@ def choose_color_roles() -> tuple[tuple[int, int, int], tuple[int, int, int], tu
     return colors[0], colors[1], colors[2]  # background, dots, border
 
 
-def paste_corner_logo(base: Image.Image, logo: Image.Image, photo_xy: tuple[int, int], photo_wh: tuple[int, int], side: str) -> None:
-    px, py = photo_xy
-    pw, ph = photo_wh
-
-    logo_target_w = max(1, int(round(pw * LOGO_SCALE)))
-    scaled = scale_to_fit(logo, logo_target_w, max(1, int(round(ph * 0.30))))
+def paste_corner_logo(base: Image.Image, logo: Image.Image, side: str, icon_scale: float) -> None:
+    cw, ch = base.size
+    logo_target_w = max(1, int(round(cw * icon_scale)))
+    scaled = scale_to_fit(logo, logo_target_w, max(1, int(round(ch * 0.30))))
     lw, lh = scaled.size
 
-    frame_left = px - BORDER_WIDTH
-    frame_right = px + pw + BORDER_WIDTH - 1
-    frame_bottom = py + ph + BORDER_WIDTH - 1
+    frame_left = 0
+    frame_right = cw - 1
+    frame_bottom = ch - 1
 
     if side == "right":
         x = frame_right - lw + 1
@@ -151,14 +134,14 @@ def paste_corner_logo(base: Image.Image, logo: Image.Image, photo_xy: tuple[int,
     base.alpha_composite(scaled, (x, y))
 
 
-def process_one(
+def render_frame(
     img_path: Path,
-    output_dir: Path,
     sigil: Image.Image,
     logo_right: Image.Image,
     logo_left: Image.Image,
     pattern_mode: str,
-) -> tuple[Path, str]:
+    icon_scale: float,
+) -> tuple[Image.Image, str]:
     with Image.open(img_path) as source:
         src = source.convert("RGBA")
 
@@ -185,9 +168,21 @@ def process_one(
         width=BORDER_WIDTH,
     )
 
-    paste_corner_logo(canvas, logo_right, (px, py), (sw, sh), "right")
-    paste_corner_logo(canvas, logo_left, (px, py), (sw, sh), "left")
+    paste_corner_logo(canvas, logo_right, "right", icon_scale)
+    paste_corner_logo(canvas, logo_left, "left", icon_scale)
+    return canvas, used_pattern
 
+
+def process_one(
+    img_path: Path,
+    output_dir: Path,
+    sigil: Image.Image,
+    logo_right: Image.Image,
+    logo_left: Image.Image,
+    pattern_mode: str,
+    icon_scale: float,
+) -> tuple[Path, str]:
+    canvas, used_pattern = render_frame(img_path, sigil, logo_right, logo_left, pattern_mode, icon_scale)
     output_dir.mkdir(exist_ok=True)
     out_path = output_dir / f"{img_path.stem}_framed.png"
     canvas.convert("RGB").save(out_path, "PNG")
@@ -198,34 +193,159 @@ class FrameMakerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(f"Frame Maker v{APP_VERSION}")
-        self.root.geometry("720x460")
+        self.root.geometry("1040x760")
 
         self.base_dir = Path(__file__).resolve().parent
-        self.status_var = tk.StringVar(value="Ready. Click Generate Frames.")
+        self.status_var = tk.StringVar(value="Ready. Select one image, preview it, then process.")
+        self.asset_pool: list[Path] = []
+        self.preview_photo: ImageTk.PhotoImage | None = None
 
         tk.Label(root, text="Frame Maker", font=("Arial", 16, "bold")).pack(pady=(10, 4))
-        tk.Label(root, text="Uses ./Input images and writes to ./Output", font=("Arial", 10)).pack(pady=(0, 10))
+        tk.Label(root, text="Preview first, then save one framed image at a time", font=("Arial", 10)).pack(pady=(0, 10))
 
-        self.run_button = tk.Button(root, text="Generate Frames", command=self.start_processing, width=24, height=2)
-        self.run_button.pack(pady=8)
+        top = tk.Frame(root)
+        top.pack(fill="both", expand=True, padx=12)
+
+        controls = tk.Frame(top)
+        controls.pack(side="left", fill="y", padx=(0, 10))
+
+        self.input_image_var = tk.StringVar(value="")
+        tk.Label(controls, text="Input image:").grid(row=0, column=0, padx=4, pady=4, sticky="w")
+        self.input_image_menu = tk.OptionMenu(controls, self.input_image_var, "")
+        self.input_image_menu.grid(row=0, column=1, padx=4, pady=4, sticky="we")
 
         self.pattern_mode_var = tk.StringVar(value=PATTERN_POLKA)
-        pattern_row = tk.Frame(root)
-        pattern_row.pack(pady=(0, 8))
-        tk.Label(pattern_row, text="Dot pattern:").pack(side="left")
-        tk.OptionMenu(pattern_row, self.pattern_mode_var, PATTERN_POLKA, PATTERN_MIXED, PATTERN_SPLATTER).pack(side="left")
+        tk.Label(controls, text="Dot pattern:").grid(row=1, column=0, padx=4, pady=4, sticky="w")
+        tk.OptionMenu(controls, self.pattern_mode_var, PATTERN_POLKA, PATTERN_MIXED, PATTERN_SPLATTER).grid(row=1, column=1, padx=4, pady=4, sticky="we")
+
+        self.icon_scale_var = tk.StringVar(value="15%")
+        tk.Label(controls, text="Icon size:").grid(row=2, column=0, padx=4, pady=4, sticky="w")
+        tk.OptionMenu(controls, self.icon_scale_var, "10%", "15%", "20%").grid(row=2, column=1, padx=4, pady=4, sticky="we")
+
+        self.sigil_var = tk.StringVar(value="Random")
+        tk.Label(controls, text="Center sigil:").grid(row=3, column=0, padx=4, pady=4, sticky="w")
+        self.sigil_menu = tk.OptionMenu(controls, self.sigil_var, "Random")
+        self.sigil_menu.grid(row=3, column=1, padx=4, pady=4, sticky="we")
+
+        self.logo_right_var = tk.StringVar(value="Random")
+        tk.Label(controls, text="Bottom-right logo:").grid(row=4, column=0, padx=4, pady=4, sticky="w")
+        self.logo_right_menu = tk.OptionMenu(controls, self.logo_right_var, "Random")
+        self.logo_right_menu.grid(row=4, column=1, padx=4, pady=4, sticky="we")
+
+        self.logo_left_var = tk.StringVar(value="Random")
+        tk.Label(controls, text="Bottom-left logo:").grid(row=5, column=0, padx=4, pady=4, sticky="w")
+        self.logo_left_menu = tk.OptionMenu(controls, self.logo_left_var, "Random")
+        self.logo_left_menu.grid(row=5, column=1, padx=4, pady=4, sticky="we")
+
+        controls.grid_columnconfigure(1, weight=1)
+
+        buttons_row = tk.Frame(controls)
+        buttons_row.grid(row=6, column=0, columnspan=2, pady=(8, 2), sticky="we")
+        self.refresh_button = tk.Button(buttons_row, text="Refresh Inputs", command=self.refresh_options, width=16)
+        self.refresh_button.pack(side="left", padx=4)
+        self.preview_button = tk.Button(buttons_row, text="Generate Preview", command=self.generate_preview, width=16)
+        self.preview_button.pack(side="left", padx=4)
+
+        self.run_button = tk.Button(
+            controls,
+            text="Process Selected Image",
+            command=self.start_processing,
+            width=32,
+            height=2,
+        )
+        self.run_button.grid(row=7, column=0, columnspan=2, pady=(8, 4), sticky="we")
+
+        preview_container = tk.Frame(top, bd=1, relief="sunken")
+        preview_container.pack(side="left", fill="both", expand=True)
+        tk.Label(preview_container, text="Preview", font=("Arial", 11, "bold")).pack(pady=(6, 2))
+        self.preview_label = tk.Label(preview_container, text="Click Generate Preview", bg="#f3f3f3")
+        self.preview_label.pack(fill="both", expand=True, padx=8, pady=8)
 
         tk.Label(root, textvariable=self.status_var, anchor="w").pack(fill="x", padx=12)
 
-        self.log = tk.Text(root, height=17, wrap="word")
+        self.log = tk.Text(root, height=12, wrap="word")
         self.log.pack(fill="both", expand=True, padx=12, pady=12)
         self.log.configure(state="disabled")
+
+        self.refresh_options()
+
+    def _set_option_values(self, option_menu: tk.OptionMenu, variable: tk.StringVar, values: list[str], default_value: str) -> None:
+        menu = option_menu["menu"]
+        menu.delete(0, "end")
+        for value in values:
+            menu.add_command(label=value, command=tk._setit(variable, value))
+        variable.set(default_value)
+
+    def refresh_options(self) -> None:
+        try:
+            input_images = list_input_images(self.base_dir / "Input")
+            image_names = [p.name for p in input_images]
+            selected_image = self.input_image_var.get() if self.input_image_var.get() in image_names else image_names[0]
+            self._set_option_values(self.input_image_menu, self.input_image_var, image_names, selected_image)
+
+            self.asset_pool = [p for p in sorted(self.base_dir.iterdir()) if p.is_file() and p.suffix.lower() in ALLOWED_INPUT_EXTS]
+            asset_names = ["Random"] + [p.name for p in self.asset_pool]
+            self._set_option_values(self.sigil_menu, self.sigil_var, asset_names, "Random")
+            self._set_option_values(self.logo_right_menu, self.logo_right_var, asset_names, "Random")
+            self._set_option_values(self.logo_left_menu, self.logo_left_var, asset_names, "Random")
+
+            self.status_var.set(f"Ready. {len(input_images)} input image(s) found.")
+        except Exception as exc:
+            self.status_var.set("Refresh failed. See log.")
+            self.append_log(f"ERROR refreshing inputs/assets: {exc}")
+
+    def _choose_asset_path(self, selection: str) -> Path:
+        if selection == "Random":
+            if not self.asset_pool:
+                raise FileNotFoundError("No image assets found next to frames2.py")
+            return random.choice(self.asset_pool)
+        chosen = self.base_dir / selection
+        if not chosen.exists():
+            raise FileNotFoundError(f"Asset not found: {selection}")
+        return chosen
+
+    def _current_selection(self) -> tuple[Path, Path, Path, Path, str, float]:
+        image_name = self.input_image_var.get().strip()
+        if not image_name:
+            raise ValueError("No input image selected")
+
+        img_path = self.base_dir / "Input" / image_name
+        if not img_path.exists():
+            raise FileNotFoundError(f"Selected image not found: {img_path}")
+
+        sigil_path = self._choose_asset_path(self.sigil_var.get())
+        logo_path = self._choose_asset_path(self.logo_right_var.get())
+        cracked_logo_path = self._choose_asset_path(self.logo_left_var.get())
+        pattern_mode = self.pattern_mode_var.get()
+        icon_scale = int(self.icon_scale_var.get().replace("%", "")) / 100.0
+        return img_path, sigil_path, logo_path, cracked_logo_path, pattern_mode, icon_scale
 
     def append_log(self, text: str) -> None:
         self.log.configure(state="normal")
         self.log.insert("end", text + "\n")
         self.log.see("end")
         self.log.configure(state="disabled")
+
+    def generate_preview(self) -> None:
+        try:
+            img_path, sigil_path, logo_path, cracked_logo_path, pattern_mode, icon_scale = self._current_selection()
+            with Image.open(sigil_path) as s:
+                sigil = s.convert("RGBA")
+            with Image.open(logo_path) as lr:
+                logo_right = lr.convert("RGBA")
+            with Image.open(cracked_logo_path) as ll:
+                logo_left = ll.convert("RGBA")
+
+            preview_image, used_pattern = render_frame(img_path, sigil, logo_right, logo_left, pattern_mode, icon_scale)
+            preview_resized = scale_to_fit(preview_image.convert("RGB"), PREVIEW_MAX_SIZE[0], PREVIEW_MAX_SIZE[1])
+            self.preview_photo = ImageTk.PhotoImage(preview_resized)
+            self.preview_label.configure(image=self.preview_photo, text="")
+
+            self.append_log(f"Preview: {img_path.name} | pattern={used_pattern} | icon={int(icon_scale * 100)}%")
+            self.status_var.set("Preview updated.")
+        except Exception as exc:
+            self.append_log(f"ERROR previewing image: {exc}")
+            self.status_var.set("Preview failed. See log.")
 
     def start_processing(self) -> None:
         self.log.configure(state="normal")
@@ -234,20 +354,16 @@ class FrameMakerApp:
 
         self.append_log(f"Frame Maker v{APP_VERSION}")
         self.run_button.configure(state="disabled")
+        self.preview_button.configure(state="disabled")
+        self.refresh_button.configure(state="disabled")
         self.status_var.set("Processing...")
         threading.Thread(target=self._process, daemon=True).start()
 
     def _process(self) -> None:
         try:
             self.append_log(f"Base folder: {self.base_dir}")
-
-            sigil_path = find_file_case_insensitive(self.base_dir, "sigil.jpg")
-            logo_path = find_file_case_insensitive(self.base_dir, "logo.png")
-            cracked_logo_path = find_file_case_insensitive(self.base_dir, "Cracked Egg Logo.png")
-
-            images = list_input_images(self.base_dir / "Input")
+            img_path, sigil_path, logo_path, cracked_logo_path, pattern_mode, icon_scale = self._current_selection()
             output_dir = self.base_dir / "Output"
-            pattern_mode = self.pattern_mode_var.get()
 
             with Image.open(sigil_path) as s:
                 sigil = s.convert("RGBA")
@@ -256,15 +372,16 @@ class FrameMakerApp:
             with Image.open(cracked_logo_path) as ll:
                 logo_left = ll.convert("RGBA")
 
-            self.append_log(f"Found {len(images)} image(s) in Input")
+            self.append_log(f"Input image: {img_path.name}")
+            self.append_log(f"Sigil: {sigil_path.name} | Right: {logo_path.name} | Left: {cracked_logo_path.name}")
             self.append_log(f"Pattern mode: {pattern_mode}")
+            self.append_log(f"Icon size: {int(icon_scale * 100)}%")
 
-            for img in images:
-                out_path, used_pattern = process_one(img, output_dir, sigil, logo_right, logo_left, pattern_mode)
-                self.append_log(f"✓ {img.name} -> {out_path.name} ({used_pattern})")
+            out_path, used_pattern = process_one(img_path, output_dir, sigil, logo_right, logo_left, pattern_mode, icon_scale)
+            self.append_log(f"✓ {img_path.name} -> {out_path.name} ({used_pattern})")
 
-            self.status_var.set(f"Done. Wrote {len(images)} file(s) to Output.")
-            self.root.after(0, lambda: messagebox.showinfo("Frame Maker", f"Done! Processed {len(images)} image(s)."))
+            self.status_var.set("Done. Wrote 1 file to Output.")
+            self.root.after(0, lambda: messagebox.showinfo("Frame Maker", f"Done! Processed {img_path.name}."))
         except Exception as exc:
             err_msg = str(exc)
             self.status_var.set("Failed. See log.")
@@ -272,6 +389,8 @@ class FrameMakerApp:
             self.root.after(0, lambda m=err_msg: messagebox.showerror("Frame Maker", m))
         finally:
             self.root.after(0, lambda: self.run_button.configure(state="normal"))
+            self.root.after(0, lambda: self.preview_button.configure(state="normal"))
+            self.root.after(0, lambda: self.refresh_button.configure(state="normal"))
 
 
 def main() -> None:
