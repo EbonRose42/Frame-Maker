@@ -18,8 +18,6 @@ BACKGROUND_SCALE = 1.15
 SIGIL_SCALE = 0.50
 LOGO_SCALE = 0.18
 LOGO_OVERLAP = 0.15
-POLKA_PRIMARY_WEIGHT = 0.8
-
 
 
 def find_file_case_insensitive(folder: Path, wanted_name: str) -> Path:
@@ -69,36 +67,6 @@ def create_splatter_background(size: tuple[int, int], bg_color: tuple[int, int, 
     return layer
 
 
-def create_polka_background(size: tuple[int, int], bg_color: tuple[int, int, int], dot_color: tuple[int, int, int]) -> Image.Image:
-    w, h = size
-    layer = Image.new("RGBA", size, bg_color + (255,))
-    draw = ImageDraw.Draw(layer)
-
-    base = min(w, h)
-    dot_radius = random.randint(max(3, int(base * 0.010)), max(5, int(base * 0.022)))
-    gap = random.randint(max(4, dot_radius // 2), max(8, dot_radius * 2))
-    tile = max(dot_radius * 2 + gap, dot_radius * 3)
-
-    diagonal = random.random() < 0.5
-    row_offset = tile // 2 if diagonal else 0
-
-    for y in range(-tile, h + tile, tile):
-        row_idx = (y + tile) // tile
-        x_offset = row_offset if diagonal and (row_idx % 2) else 0
-        for x in range(-tile, w + tile, tile):
-            cx = x + x_offset
-            cy = y
-            draw.ellipse((cx - dot_radius, cy - dot_radius, cx + dot_radius, cy + dot_radius), fill=dot_color + (255,))
-
-    return layer
-
-
-def create_dotted_background(size: tuple[int, int], bg_color: tuple[int, int, int], dot_color: tuple[int, int, int]) -> tuple[Image.Image, str]:
-    if random.random() < POLKA_PRIMARY_WEIGHT:
-        return create_polka_background(size, bg_color, dot_color), "polka"
-    return create_splatter_background(size, bg_color, dot_color), "splatter"
-
-
 def choose_color_roles() -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
     colors = list(PALETTE)
     random.shuffle(colors)
@@ -125,7 +93,7 @@ def corner_logo(base: Image.Image, logo: Image.Image, photo_xy: tuple[int, int],
     base.alpha_composite(scaled, (x, y))
 
 
-def process_image(img_path: Path, output_dir: Path, sigil: Image.Image, logo_r: Image.Image, logo_l: Image.Image) -> tuple[Path, str]:
+def process_image(img_path: Path, output_dir: Path, sigil: Image.Image, logo_r: Image.Image, logo_l: Image.Image) -> Path:
     with Image.open(img_path) as source:
         src = source.convert("RGBA")
 
@@ -134,7 +102,7 @@ def process_image(img_path: Path, output_dir: Path, sigil: Image.Image, logo_r: 
     ch = max(sh + 2 * BORDER_WIDTH, int(round(sh * BACKGROUND_SCALE)))
 
     bg_color, dot_color, border_color = choose_color_roles()
-    canvas, pattern_name = create_dotted_background((cw, ch), bg_color, dot_color)
+    canvas = create_dotted_background((cw, ch), bg_color, dot_color)
 
     sigil_scaled = scale_to_fit(sigil, int(round(sw * SIGIL_SCALE)), int(round(sh * SIGIL_SCALE)))
     sx = (cw - sigil_scaled.width) // 2
@@ -154,7 +122,7 @@ def process_image(img_path: Path, output_dir: Path, sigil: Image.Image, logo_r: 
     output_dir.mkdir(exist_ok=True)
     out_path = output_dir / f"{img_path.stem}_framed.png"
     canvas.convert("RGB").save(out_path, "PNG")
-    return out_path, pattern_name
+    return out_path
 
 
 class FrameMakerApp:
@@ -210,8 +178,8 @@ class FrameMakerApp:
 
             self.append_log(f"Found {len(images)} images in Input")
             for img in images:
-                out, pattern_name = process_image(img, output_dir, sigil, logo_r, logo_l)
-                self.append_log(f"✓ {img.name} -> {out.name} ({pattern_name})")
+                out = process_image(img, output_dir, sigil, logo_r, logo_l)
+                self.append_log(f"✓ {img.name} -> {out.name}")
 
             self.status_var.set(f"Done. Wrote {len(images)} file(s) to Output.")
             self.root.after(0, lambda: messagebox.showinfo("Frame Maker", f"Done! Processed {len(images)} image(s)."))
