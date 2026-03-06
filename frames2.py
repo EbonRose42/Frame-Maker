@@ -316,6 +316,9 @@ class FrameMakerApp:
         self.base_dir = Path(__file__).resolve().parent
         self.status_var = tk.StringVar(value="Ready. Tune settings, preview, then process.")
         self.preview_photo: ImageTk.PhotoImage | None = None
+        self.preview_render_cache: Image.Image | None = None
+        self.preview_signature: tuple[str, tuple[tuple[str, object], ...]] | None = None
+        self.preview_used_pattern: str | None = None
         self.processed_images: set[str] = set()
 
         tk.Label(root, text="Frame Maker", font=("Arial", 16, "bold")).pack(pady=(10, 4))
@@ -480,6 +483,10 @@ class FrameMakerApp:
             "dot_gap_random": self.dot_gap_random_var.get(),
             "dot_orientation_random": self.dot_orientation_random_var.get(),
         }
+    def _selection_signature(self, img_path: Path, settings: dict[str, int | float | str | bool]) -> tuple[str, tuple[tuple[str, object], ...]]:
+        ordered = tuple(sorted(settings.items()))
+        return str(img_path.resolve()), ordered
+
 
     def generate_preview(self) -> None:
         try:
@@ -495,6 +502,10 @@ class FrameMakerApp:
                 logo_b = b.convert("RGBA")
 
             preview_image, used_pattern = render_frame(img_path, sigil, logo_a, logo_b, **settings)
+            self.preview_render_cache = preview_image.copy()
+            self.preview_signature = self._selection_signature(img_path, settings)
+            self.preview_used_pattern = used_pattern
+
             preview_resized = scale_to_fit(preview_image.convert("RGB"), PREVIEW_MAX_SIZE[0], PREVIEW_MAX_SIZE[1])
             self.preview_photo = ImageTk.PhotoImage(preview_resized)
             self.preview_label.configure(image=self.preview_photo, text="")
@@ -545,7 +556,18 @@ class FrameMakerApp:
                 logo_b = b.convert("RGBA")
 
             output_dir = self.base_dir / "Output"
-            out_path, used_pattern = process_one(img_path, output_dir, sigil, logo_a, logo_b, **settings)
+            output_dir.mkdir(exist_ok=True)
+            out_path = output_dir / f"{img_path.stem}_framed.png"
+
+            current_signature = self._selection_signature(img_path, settings)
+            if self.preview_render_cache is not None and self.preview_signature == current_signature:
+                self.preview_render_cache.convert("RGB").save(out_path, "PNG")
+                used_pattern = self.preview_used_pattern or "preview"
+                self.append_log("Using cached preview render for exact output match.")
+            else:
+                _, used_pattern = process_one(img_path, output_dir, sigil, logo_a, logo_b, **settings)
+                self.append_log("Preview was stale or missing; output rendered from current settings.")
+
             self.append_log(f"✓ {img_path.name} -> {out_path.name} ({used_pattern})")
             self.status_var.set("Done. Wrote 1 file to Output.")
 
